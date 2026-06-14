@@ -83,6 +83,8 @@ export function ExamClient() {
   // ── Core state ──────────────────────────────────────────────────────────────
   const [phase, setPhase]           = useState('pre')     // 'pre' | 'denied' | 'exam' | 'submitted'
   const [consentChecked, setConsent] = useState(false)
+  const [studentInfo, setStudentInfo] = useState({ name: '', studentId: '' })
+  const [infoErrors, setInfoErrors]   = useState({})
   const [currentQ, setCurrentQ]     = useState(0)
   const [answers, setAnswers]       = useState({})
   const [timeLeft, setTimeLeft]     = useState(totalSeconds)
@@ -250,22 +252,39 @@ export function ExamClient() {
     })
   }, [questions])
 
+  // ── Validate student info form ─────────────────────────────────────────────
+  const validateInfo = () => {
+    const errors = {}
+    if (!studentInfo.name.trim()) errors.name = 'Full name is required'
+    if (!studentInfo.studentId.trim()) errors.studentId = 'Student ID / Roll number is required'
+    else if (!/^[a-zA-Z0-9/_-]{3,30}$/.test(studentInfo.studentId.trim()))
+      errors.studentId = 'Use 3–30 alphanumeric characters (hyphens/underscores allowed)'
+    setInfoErrors(errors)
+    return Object.keys(errors).length === 0
+  }
+
   // ── Exam start ──────────────────────────────────────────────────────────────
   const handleStart = async () => {
     if (!consentChecked) return
+    if (!validateInfo()) return
 
-    // Save consent audit trail
+    const candidateId = studentInfo.studentId.trim().toUpperCase()
+    const candidateName = studentInfo.name.trim()
+
+    // Save consent audit trail — include student identity
     const consentRecord = {
       agreedAt:       new Date().toISOString(),
       examId:         examConfig.examId,
       examName:       examConfig.examName,
+      candidateId,
+      candidateName,
       userAgent:      navigator.userAgent,
       language:       navigator.language,
       timezone:       Intl.DateTimeFormat().resolvedOptions().timeZone,
       screenRes:      `${screen.width}x${screen.height}`,
       consentVersion: CONSENT_VERSION,
     }
-    try { localStorage.setItem(`proctorai_consent_${examConfig.examId}`, JSON.stringify(consentRecord)) } catch { /* ignore */ }
+    try { localStorage.setItem(`proctorai_consent_${examConfig.examId}_${candidateId}`, JSON.stringify(consentRecord)) } catch { /* ignore */ }
     apiPost('/api/consent', consentRecord)  // fire-and-forget, offline-safe
 
     // Request camera + microphone — BOTH required
@@ -298,13 +317,13 @@ export function ExamClient() {
     const micOk = startAudioMonitor(stream, () => {
       setStatus((s) => ({ ...s, speechEvents: s.speechEvents + 1 }))
       addEvent('speech', 'Voice activity detected — possible verbal communication', 'alert')
-      wsRef.current?.sendEvent({ type: 'speech', ts: Date.now(), data: {} })
+      wsRef.current?.sendEvent({ type: 'speech', ts: Date.now(), data: { candidateId } })
     })
 
     setStatus((s) => ({ ...s, webcam: true, mic: micOk }))
 
-    // WebSocket
-    const ws = createWsClient(examConfig.examId, 'STUDENT-001', (st) =>
+    // WebSocket — use real candidateId, not a hardcoded placeholder
+    const ws = createWsClient(examConfig.examId, candidateId, (st) =>
       setStatus((s) => ({ ...s, ws: st }))
     )
     ws.connect()
@@ -611,6 +630,46 @@ export function ExamClient() {
               ))}
             </ul>
 
+            {/* ── Student Identity ── */}
+            <div className="rounded-xl border border-slate-200 bg-slate-50 p-4 space-y-3">
+              <p className="text-xs font-semibold uppercase tracking-wider text-slate-500 flex items-center gap-2">
+                <span className="inline-flex h-5 w-5 items-center justify-center rounded-full bg-navy text-white text-[10px] font-bold">1</span>
+                Your Identity
+              </p>
+              <div className="space-y-2">
+                <div>
+                  <label className="text-xs font-medium text-slate-600 block mb-1">Full Name *</label>
+                  <input
+                    type="text"
+                    placeholder="e.g. Parth Sharma"
+                    value={studentInfo.name}
+                    onChange={(e) => { setStudentInfo((s) => ({ ...s, name: e.target.value })); setInfoErrors((er) => ({ ...er, name: null })) }}
+                    className={`w-full rounded-lg border px-3 py-2 text-sm text-slate-800 bg-white placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-navy/30 transition-all ${infoErrors.name ? 'border-red-400 bg-red-50' : 'border-slate-200'}`}
+                  />
+                  {infoErrors.name && <p className="text-xs text-red-600 mt-1">{infoErrors.name}</p>}
+                </div>
+                <div>
+                  <label className="text-xs font-medium text-slate-600 block mb-1">Student ID / Roll Number *</label>
+                  <input
+                    type="text"
+                    placeholder="e.g. CS2024-042 or ROLL001"
+                    value={studentInfo.studentId}
+                    onChange={(e) => { setStudentInfo((s) => ({ ...s, studentId: e.target.value })); setInfoErrors((er) => ({ ...er, studentId: null })) }}
+                    className={`w-full rounded-lg border px-3 py-2 text-sm text-slate-800 bg-white placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-navy/30 transition-all font-mono ${infoErrors.studentId ? 'border-red-400 bg-red-50' : 'border-slate-200'}`}
+                  />
+                  {infoErrors.studentId && <p className="text-xs text-red-600 mt-1">{infoErrors.studentId}</p>}
+                  <p className="text-[10px] text-slate-400 mt-1">This is used to identify your session on the invigilator dashboard.</p>
+                </div>
+              </div>
+            </div>
+
+            {/* ── Consent ── */}
+            <div className="space-y-3">
+              <p className="text-xs font-semibold uppercase tracking-wider text-slate-500 flex items-center gap-2">
+                <span className="inline-flex h-5 w-5 items-center justify-center rounded-full bg-navy text-white text-[10px] font-bold">2</span>
+                Consent & Monitoring Agreement
+              </p>
+
             {/* Consent checkbox */}
             <label className="flex items-start gap-3 cursor-pointer rounded-xl border-2 border-navy/20 bg-navy/5 p-4 hover:border-navy/40 transition-colors">
               <input
@@ -628,14 +687,19 @@ export function ExamClient() {
                 described above. I understand that this session will be recorded.
               </span>
             </label>
+            </div>
 
             <button
               type="button"
               onClick={handleStart}
-              disabled={!consentChecked}
+              disabled={!consentChecked || !studentInfo.name.trim() || !studentInfo.studentId.trim()}
               className="w-full rounded-xl bg-navy py-3 text-sm font-semibold text-white hover:bg-navy-light transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
             >
-              {consentChecked ? 'Begin Examination' : 'Agree to Privacy Policy to Continue'}
+              {!studentInfo.name.trim() || !studentInfo.studentId.trim()
+                ? 'Enter Your Details to Continue'
+                : !consentChecked
+                  ? 'Agree to Privacy Policy to Continue'
+                  : 'Begin Examination'}
             </button>
           </div>
         </div>
