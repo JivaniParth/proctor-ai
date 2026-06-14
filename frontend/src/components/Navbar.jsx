@@ -1,5 +1,5 @@
 import { Link, useLocation } from 'react-router-dom'
-import { LayoutDashboard, GraduationCap, Home, Settings } from 'lucide-react'
+import { LayoutDashboard, GraduationCap, Home, Settings, Shield } from 'lucide-react'
 
 export function Navbar() {
   const location = useLocation()
@@ -9,6 +9,7 @@ export function Navbar() {
     { to: '/dashboard', label: 'Dashboard', icon: LayoutDashboard },
     { to: '/exam', label: 'Exam Client', icon: GraduationCap },
     { to: '/setup', label: 'Exam Setup', icon: Settings },
+    { to: '/privacy', label: 'Privacy', icon: Shield },
   ]
 
   return (

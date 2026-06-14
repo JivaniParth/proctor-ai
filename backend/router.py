@@ -1,4 +1,4 @@
-"""FastAPI WebSocket endpoint for ProctorAI exam clients."""
+"""FastAPI WebSocket + REST endpoint for ProctorAI exam clients."""
 
 import asyncio
 import json
@@ -7,17 +7,18 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Optional
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, ValidationError
 
 from aggregator import Aggregator, RawEvent as AggEvent
 from xai import evaluate
+from db import init_db, save_exam_config, load_exam_config, save_consent, get_consents, save_events, USE_DATABASE
 
 log = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
 
-app = FastAPI(title="ProctorAI API", version="1.0.0")
+app = FastAPI(title="ProctorAI API", version="2.0.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -27,11 +28,21 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Initialise DB on startup (no-op if USE_DATABASE=false)
+@app.on_event("startup")
+def on_startup():
+    init_db()
+    log.info(f"ProctorAI started — database persistence {'ACTIVE' if USE_DATABASE else 'DISABLED (set PROCTORAI_USE_DB=true to enable)'}")
+
+
 VALID_TYPES = {
     "gaze_away", "face_absent", "face_present",
     "tab_switch", "keystroke", "paste", "snapshot",
+    "speech", "gaze_center", "gaze_left", "gaze_right",
 }
 
+
+# ── Pydantic Models ────────────────────────────────────────────────────────────
 
 class RawEvent(BaseModel):
     type: str
@@ -45,6 +56,24 @@ class RawEvent(BaseModel):
 class IncomingBatch(BaseModel):
     events: list[RawEvent]
 
+
+class ExamConfigPayload(BaseModel):
+    exam_id: str
+    config: dict
+
+
+class ConsentPayload(BaseModel):
+    examId: str
+    candidateId: Optional[str] = None
+    agreedAt: str
+    userAgent: Optional[str] = None
+    language: Optional[str] = None
+    timezone: Optional[str] = None
+    screenRes: Optional[str] = None
+    consentVersion: str = "1.0"
+
+
+# ── Session Management ─────────────────────────────────────────────────────────
 
 @dataclass
 class CandidateSession:
@@ -125,6 +154,8 @@ class SessionManager:
 session_manager = SessionManager()
 
 
+# ── Pipeline ───────────────────────────────────────────────────────────────────
+
 async def run_pipeline(session: CandidateSession, new_events: list[RawEvent]):
     agg_events = [AggEvent(type=e.type, ts=e.ts, data=e.data) for e in new_events if e.type != "snapshot"]
     window = session.aggregator.update(agg_events)
@@ -142,12 +173,61 @@ async def run_pipeline(session: CandidateSession, new_events: list[RawEvent]):
     session.last_eval = eval_data
     await session_manager.broadcast_eval(session.exam_id, session.candidate_id, eval_data)
 
+    # Persist events to DB if enabled
+    if USE_DATABASE:
+        save_events(session.exam_id, session.candidate_id, [e.model_dump() for e in new_events])
+
+
+# ── REST Endpoints ─────────────────────────────────────────────────────────────
 
 @app.get("/")
 async def root():
-    return {"service": "ProctorAI", "status": "running", "version": "1.0.0"}
+    return {"service": "ProctorAI", "status": "running", "version": "2.0.0", "db": USE_DATABASE}
 
 
+@app.get("/health")
+async def health():
+    return {"status": "ok", "db_active": USE_DATABASE}
+
+
+# Exam Config
+@app.post("/api/exam-config")
+async def create_exam_config(payload: ExamConfigPayload):
+    saved = save_exam_config(payload.exam_id, payload.config)
+    return {
+        "ok": True,
+        "persisted": saved,
+        "message": "Saved to database" if saved else "Database disabled — config not persisted server-side",
+    }
+
+
+@app.get("/api/exam-config/{exam_id}")
+async def get_exam_config(exam_id: str):
+    config = load_exam_config(exam_id)
+    if config is None:
+        raise HTTPException(status_code=404, detail="Exam config not found or database disabled")
+    return {"ok": True, "exam_id": exam_id, "config": config}
+
+
+# Consent
+@app.post("/api/consent")
+async def record_consent(payload: ConsentPayload):
+    record = payload.model_dump()
+    saved = save_consent(record)
+    return {
+        "ok": True,
+        "persisted": saved,
+        "message": "Consent recorded in database" if saved else "Database disabled — consent stored client-side only",
+    }
+
+
+@app.get("/api/consent/{exam_id}")
+async def list_consents(exam_id: str, candidate_id: Optional[str] = None):
+    records = get_consents(exam_id, candidate_id)
+    return {"ok": True, "exam_id": exam_id, "count": len(records), "records": records}
+
+
+# Sessions admin
 @app.get("/admin/sessions/{exam_id}")
 async def list_sessions(exam_id: str):
     sessions = session_manager.all_sessions(exam_id)
@@ -167,6 +247,8 @@ async def list_sessions(exam_id: str):
     }
 
 
+# ── WebSocket Endpoints ────────────────────────────────────────────────────────
+
 @app.websocket("/ws/dashboard/{exam_id}")
 async def dashboard_ws(websocket: WebSocket, exam_id: str):
     await websocket.accept()
@@ -181,7 +263,12 @@ async def dashboard_ws(websocket: WebSocket, exam_id: str):
 @app.websocket("/ws/{exam_id}/{candidate_id}")
 async def ws_endpoint(websocket: WebSocket, exam_id: str, candidate_id: str):
     await websocket.accept()
+    log.info(f"WS connected: {exam_id}/{candidate_id}")
     session = await session_manager.get_or_create(exam_id, candidate_id, websocket)
+
+    # Send ack with current eval if reconnecting
+    if session.last_eval:
+        await websocket.send_json({"type": "reconnect_ack", **session.last_eval})
 
     try:
         while True:
@@ -204,4 +291,5 @@ async def ws_endpoint(websocket: WebSocket, exam_id: str, candidate_id: str):
             asyncio.create_task(run_pipeline(session, valid_events))
 
     except WebSocketDisconnect:
+        log.info(f"WS disconnected: {exam_id}/{candidate_id}")
         await session_manager.remove(exam_id, candidate_id)

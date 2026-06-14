@@ -1,4 +1,5 @@
 import { create } from 'zustand'
+import { apiGet, apiPost } from '../lib/wsClient.js'
 
 // Default questions used when examiner hasn't configured any
 export const DEFAULT_QUESTIONS = [
@@ -34,53 +35,95 @@ const DEFAULT_CONFIG = {
   examName: 'Advanced Algorithms — Final Examination',
   examId: 'EXAM-2026-001',
   timeLimitMinutes: 90,
-  marksPerQuestion: null, // null means each question has its own marks field
+  marksPerQuestion: null,
   passingPercent: 40,
   questions: DEFAULT_QUESTIONS,
 }
 
 const STORAGE_KEY = 'proctorai_exam_config'
 
-function loadFromStorage() {
+function readLocalStorage() {
   try {
     const raw = localStorage.getItem(STORAGE_KEY)
     if (raw) {
       const parsed = JSON.parse(raw)
-      if (parsed && parsed.questions && parsed.questions.length > 0) {
-        return { ...DEFAULT_CONFIG, ...parsed }
-      }
+      if (parsed?.questions?.length > 0) return parsed
     }
-  } catch {
-    // ignore
-  }
-  return { ...DEFAULT_CONFIG }
+  } catch { /* ignore */ }
+  return null
+}
+
+function writeLocalStorage(config) {
+  try { localStorage.setItem(STORAGE_KEY, JSON.stringify(config)) } catch { /* ignore */ }
+}
+
+function clearLocalStorage() {
+  try { localStorage.removeItem(STORAGE_KEY) } catch { /* ignore */ }
 }
 
 export const useExamStore = create((set, get) => ({
-  examConfig: loadFromStorage(),
-  isCustom: !!localStorage.getItem(STORAGE_KEY),
+  examConfig: { ...DEFAULT_CONFIG },
+  isCustom: false,
+  configSource: 'default',   // 'server' | 'local' | 'default'
+  saveStatus: 'idle',        // 'idle' | 'saving' | 'saved-server' | 'saved-local' | 'error'
 
-  saveConfig: (config) => {
-    const merged = { ...get().examConfig, ...config }
-    try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(merged))
-    } catch {
-      // ignore
+  /**
+   * Load config:
+   * 1. Try GET /api/exam-config/{examId} from backend
+   * 2. Fall back to localStorage
+   * 3. Fall back to defaults
+   */
+  loadConfig: async () => {
+    const examId = get().examConfig.examId
+
+    // Try backend first
+    const res = await apiGet(`/api/exam-config/${examId}`)
+    if (res.ok && res.data?.config) {
+      const config = { ...DEFAULT_CONFIG, ...res.data.config }
+      writeLocalStorage(config)  // keep local copy in sync
+      set({ examConfig: config, isCustom: true, configSource: 'server' })
+      return
     }
+
+    // Fall back to localStorage
+    const local = readLocalStorage()
+    if (local) {
+      set({ examConfig: { ...DEFAULT_CONFIG, ...local }, isCustom: true, configSource: 'local' })
+      return
+    }
+
+    // Use defaults
+    set({ examConfig: { ...DEFAULT_CONFIG }, isCustom: false, configSource: 'default' })
+  },
+
+  /**
+   * Save config:
+   * 1. Always write to localStorage immediately
+   * 2. Try POST /api/exam-config to backend
+   * 3. Report whether it was persisted server-side
+   */
+  saveConfig: async (config) => {
+    const merged = { ...get().examConfig, ...config }
+    set({ saveStatus: 'saving' })
+
+    // Always save locally first (instant, no network needed)
+    writeLocalStorage(merged)
     set({ examConfig: merged, isCustom: true })
+
+    // Try backend
+    const res = await apiPost('/api/exam-config', { exam_id: merged.examId, config: merged })
+    if (res.ok) {
+      set({ saveStatus: 'saved-server', configSource: 'server' })
+    } else {
+      set({ saveStatus: 'saved-local', configSource: 'local' })
+    }
+
+    // Reset status after 3s
+    setTimeout(() => set({ saveStatus: 'idle' }), 3000)
   },
 
   resetConfig: () => {
-    try {
-      localStorage.removeItem(STORAGE_KEY)
-    } catch {
-      // ignore
-    }
-    set({ examConfig: { ...DEFAULT_CONFIG }, isCustom: false })
-  },
-
-  loadConfig: () => {
-    const config = loadFromStorage()
-    set({ examConfig: config, isCustom: !!localStorage.getItem(STORAGE_KEY) })
+    clearLocalStorage()
+    set({ examConfig: { ...DEFAULT_CONFIG }, isCustom: false, configSource: 'default', saveStatus: 'idle' })
   },
 }))
