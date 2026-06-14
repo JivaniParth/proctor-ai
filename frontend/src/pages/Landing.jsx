@@ -39,14 +39,7 @@ export function Landing() {
         <div className="absolute left-1/3 top-1/4 h-1.5 w-1.5 rounded-full bg-white/30" />
 
         <div className="relative mx-auto max-w-7xl px-4 py-20 sm:px-6 sm:py-28">
-          <div className="flex flex-wrap items-center gap-2 mb-6">
-            <span className="rounded-full bg-accent/20 border border-accent/40 px-3 py-1 text-xs font-semibold text-accent-light">
-              Far Away Hackathon 2026
-            </span>
-            <span className="rounded-full bg-white/10 border border-white/20 px-3 py-1 text-xs font-medium text-white/80">
-              Theme: Agentic & Autonomous Systems
-            </span>
-          </div>
+
 
           <h1 className="font-display text-5xl sm:text-6xl lg:text-7xl font-bold leading-tight max-w-4xl">
             Proctor<span className="text-accent">AI</span>
@@ -192,11 +185,11 @@ export function Landing() {
             to="/dashboard"
             className="inline-flex items-center gap-2 rounded-xl bg-accent px-8 py-3 text-sm font-semibold hover:bg-accent-light transition-colors"
           >
-            Launch Live Dashboard Demo
+            Open Dashboard
             <ArrowRight className="h-4 w-4" />
           </Link>
           <p className="mt-6 text-xs text-white/40">
-            Far Away Hackathon 2026 · ProctorAI · Agentic & Autonomous Systems
+            ProctorAI — Agentic Autonomous Exam Integrity System
           </p>
         </div>
       </section>
