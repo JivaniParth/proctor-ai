@@ -20,7 +20,7 @@ export function Navbar() {
           </div>
           <div>
             <span className="text-lg font-bold text-navy">ProctorAI</span>
-            <span className="hidden sm:inline text-xs text-slate-400 ml-2">Far Away 2026</span>
+            <span className="hidden sm:inline text-xs text-slate-400 ml-2">Exam Integrity</span>
           </div>
         </Link>
 
